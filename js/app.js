@@ -216,11 +216,16 @@ async function boucle() {
     etat.occupe = true;
     const prec = etat.pose.p, avant = etat.posePrec || prec;
     const pred = prec.map((v, i) => i < 6 ? v + 0.5 * (v - avant[i]) : v);      // prédiction (vitesse constante, amortie)
-    const g = gris(640, video);
+    // résolution adaptée au téléphone : on réduit si le calcul est trop lent (vise ~8 images/s ou plus)
+    etat.resSuivi = etat.resSuivi || 640;
+    const g = gris(etat.resSuivi, video);
     const r = await envoyer({ cmd: "suivre", gris: g, p: pred, wImg: etat.fw, hImg: etat.fh }, [g.data.buffer]);
     etat.occupe = false;
     if (etat.mode !== "suivi") return;
     etat.msSuivi = performance.now() - t; etat.qualite = r.qualite || 0;
+    etat.msMoy = etat.msMoy ? 0.8 * etat.msMoy + 0.2 * etat.msSuivi : etat.msSuivi;
+    if (etat.msMoy > 130 && etat.resSuivi > 400) { etat.resSuivi -= 80; etat.msMoy = 0; }
+    else if (etat.msMoy < 50 && etat.resSuivi < 640) { etat.resSuivi += 80; etat.msMoy = 0; }
     if (!r.erreur && !r.perdu && r.qualite >= 0.3) { etat.posePrec = prec; etat.pose = { p: r.p }; etat.faibles = 0; etat.vis = null; }
     else if (++etat.faibles >= 6) { etat.posePrec = null; passerEn("accrochage"); bandeau("Suivi perdu : replace la pièce sous le contour blanc."); }
   } else if (etat.mode === "accrochage" && t - dernierEnvoi > 250) {
