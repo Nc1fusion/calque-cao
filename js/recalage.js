@@ -305,7 +305,12 @@ function accrocherPose(gris, M, p0, cx, cy) {
 // jugement relatif : une petite erreur de pose décale tous les trous d'une même plaque de la même façon ;
 // on retire ce décalage commun (médiane) et on juge chaque trou par rapport à ses voisins.
 function jugerRelatif(M, ct, tol) {
-  const plaque = tr => tr.axe.join(",") + "@" + Math.round(tr.c[0] * tr.axe[0] + tr.c[1] * tr.axe[1] + tr.c[2] * tr.axe[2]);
+  const plaque = tr => {
+    // même plaque = même direction d'axe (au signe près) et même plan à ~3 mm près
+    const k = [0, 1, 2].reduce((a, b) => Math.abs(tr.axe[b]) > Math.abs(tr.axe[a]) ? b : a, 0), sg = tr.axe[k] < 0 ? -1 : 1;
+    const a = tr.axe.map(v => Math.round(sg * v * 20) / 20);
+    return a.join(",") + "@" + Math.round(sg * (tr.c[0] * tr.axe[0] + tr.c[1] * tr.axe[1] + tr.c[2] * tr.axe[2]) / 3);
+  };
   const groupes = {};
   ct.forEach((c, i) => { if (c.etat === "cache" || c.etat === "absent") return; (groupes[plaque(M.trous[i])] = groupes[plaque(M.trous[i])] || []).push(i); });
   return ct.map((c, i) => {

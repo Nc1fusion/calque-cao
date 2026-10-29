@@ -57,6 +57,9 @@
       <h2>Pièce à inspecter</h2>
       <button value="fermer" class="discret" aria-label="Fermer">Fermer</button>
     </div>
+    <label class="bouton-fichier principal" for="f-step"><input type="file" id="f-step" accept=".step,.stp,.STEP,.STP">Ouvrir un fichier STEP</label>
+    <p class="aide" id="step-info" hidden></p>
+    <p class="etiquette">Ou une pièce simple</p>
     <div class="segments" role="group" aria-label="Type de pièce">
       <button type="button" data-type="boite">Boîte</button>
       <button type="button" data-type="h">Poutre H</button>
@@ -78,6 +81,8 @@
 <script src="js/solveur.js"></script>
 <script src="js/modeles.js"></script>
 <script src="js/recalage.js"></script>
+<script src="js/placement.js"></script>
+<script src="js/step.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

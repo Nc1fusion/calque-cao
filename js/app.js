@@ -15,6 +15,8 @@ const etat = {
   vis: null,                  // tampon de profondeur pour l'affichage
   bilan: { captures: 0, mesures: [] },
   occupe: false, glisse: null, doigt: null, verrou: null,
+  placeMode: "fantome",       // fantome (gestes + automatique) | coins
+  candidats: [], iCandidat: 0, stepM: null, stepNom: "",
 };
 
 // ---------- fil de calcul ----------
@@ -36,6 +38,10 @@ function lireDims() {
   return D;
 }
 function remplirReglages() {
+  const estStep = etat.type === "step";
+  $("dims").hidden = estStep; $("zone-trous").hidden = estStep || etat.type === "boite";
+  document.querySelectorAll(".segments button").forEach(b => b.setAttribute("aria-pressed", b.dataset.type === etat.type));
+  if (estStep) return;
   const T = TYPES[etat.type], z = $("dims"); z.innerHTML = "";
   T.dims.forEach(([k, lib, v]) => {
     const l = document.createElement("label"); l.htmlFor = "d-" + k;
@@ -46,18 +52,52 @@ function remplirReglages() {
   document.querySelectorAll(".segments button").forEach(b => b.setAttribute("aria-pressed", b.dataset.type === etat.type));
 }
 async function appliquerModele() {
-  etat.D = lireDims();
-  etat.texteTrous = etat.type === "boite" ? "" : $("trous").value;
   etat.tol = parseFloat($("tol").value) || 6;
-  etat.M = construireModele(etat.type, etat.D, etat.texteTrous);
-  const err = $("trous-err");
-  err.hidden = !etat.M.erreurs.length;
-  err.textContent = etat.M.erreurs.length ? `Ligne(s) ${etat.M.erreurs.join(", ")} ignorée(s) : format non reconnu.` : "";
-  $("b-piece").textContent = TYPES[etat.type].nom;
-  viderBilan();
-  await envoyer({ cmd: "modele", type: etat.type, D: etat.D, trous: etat.texteTrous });
+  if (etat.type === "step" && etat.stepM) {
+    etat.M = etat.stepM;
+    $("b-piece").textContent = etat.stepNom;
+  } else {
+    if (etat.type === "step") etat.type = "h";
+    etat.D = lireDims();
+    etat.texteTrous = etat.type === "boite" ? "" : $("trous").value;
+    etat.M = construireModele(etat.type, etat.D, etat.texteTrous);
+    const err = $("trous-err");
+    err.hidden = !etat.M.erreurs.length;
+    err.textContent = etat.M.erreurs.length ? `Ligne(s) ${etat.M.erreurs.join(", ")} ignorée(s) : format non reconnu.` : "";
+    $("b-piece").textContent = TYPES[etat.type].nom;
+  }
+  viderBilan(); etat.candidats = [];
+  await envoyer({ cmd: "modele", M: etat.M });
   dessinerSchema();
 }
+// ---------- fichier STEP (OpenCascade compilé en WebAssembly, chargé à la demande) ----------
+const OCCT_URL = "https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/";
+let occtPret = null;
+function chargerOcct() {
+  if (occtPret) return occtPret;
+  occtPret = new Promise((ok, ko) => {
+    const s = document.createElement("script"); s.src = OCCT_URL + "occt-import-js.js";
+    s.onload = () => occtimportjs({ locateFile: f => OCCT_URL + f }).then(ok, ko);
+    s.onerror = () => ko(new Error("bibliothèque STEP introuvable (connexion ?)"));
+    document.head.appendChild(s);
+  });
+  occtPret.catch(() => { occtPret = null; });
+  return occtPret;
+}
+$("f-step").addEventListener("change", async e => {
+  const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+  const info = $("step-info"); info.hidden = false; info.textContent = "Lecture du fichier STEP… (la première fois, téléchargement de 8 Mo)";
+  try {
+    const occt = await chargerOcct();
+    const r = occt.ReadStepFile(new Uint8Array(await f.arrayBuffer()), null);
+    if (!r.success || !r.meshes.length) throw new Error("fichier illisible");
+    const M = modeleDepuisMaillages(r.meshes, f.name);
+    const dim = [0, 1, 2].map(i => Math.round(M.boite[1][i] - M.boite[0][i]));
+    etat.stepM = M; etat.stepNom = f.name.replace(/\.(step|stp)$/i, ""); etat.type = "step";
+    info.textContent = `${f.name} : ${dim.join(" × ")} mm · ${M.trous.length} trou${M.trous.length > 1 ? "s" : ""} trouvé${M.trous.length > 1 ? "s" : ""}. Touche « Appliquer ».`;
+    remplirReglages();
+  } catch (err) { info.textContent = "Impossible de lire ce fichier : " + (err.message || err); }
+});
 $("b-piece").onclick = () => { remplirReglages(); $("reglages").showModal(); };
 document.querySelectorAll(".segments button").forEach(b => b.onclick = () => {
   etat.type = b.dataset.type; etat.D = {}; remplirReglages(); $("trous").value = TYPES[etat.type].trous;
@@ -93,7 +133,7 @@ $("f-video").addEventListener("change", async e => {
     const s = Math.min(1, 2000 / Math.max(im.naturalWidth, im.naturalHeight)), c = document.createElement("canvas");
     c.width = Math.round(im.naturalWidth * s); c.height = Math.round(im.naturalHeight * s);
     c.getContext("2d").drawImage(im, 0, 0, c.width, c.height);
-    etat.source = "photo"; preparerSource(c.width, c.height); etat.fige = c; viderPoints(); passerEn("placement");
+    etat.source = "photo"; preparerSource(c.width, c.height); etat.fige = c; viderPoints(); entrerPlacement();
     return;
   }
   video.srcObject = null; video.src = url; video.loop = true; video.muted = true;
@@ -124,10 +164,15 @@ function figer() {
 }
 
 // ---------- modes ----------
+function entrerPlacement() {
+  if (!etat.pose) etat.pose = { p: vueParDefaut() };
+  etat.qualite = 0; etat.candidats = [];
+  passerEn("placement");
+}
 function passerEn(mode) {
   etat.mode = mode;
   scene.classList.toggle("fige", mode === "placement" || etat.source === "photo");
-  $("coins-zone").hidden = mode !== "placement";
+  $("coins-zone").hidden = !(mode === "placement" && etat.placeMode === "coins");
   if (etat.source === "video") { if (mode === "placement") video.pause(); else video.play().catch(() => {}); }
   if (mode === "suivi" || mode === "accrochage") garderEcranAllume(); else lacherEcran();
   etat.faibles = 0;
@@ -140,22 +185,35 @@ function commandes() {
   const n = Object.keys(etat.points).length;
   switch (etat.mode) {
     case "direct":
-      bouton("Figer l'image et placer les coins", () => { etat.fige = figer(); viderPoints(); passerEn("placement"); }, "principal");
-      if (etat.pose) bouton("Raccrocher le modèle", () => passerEn("accrochage"));
-      note("Cadre la pièce de biais (deux faces visibles), garde le téléphone immobile, puis fige l'image.");
+      bouton("Figer l'image", () => { etat.fige = figer(); viderPoints(); entrerPlacement(); }, "principal");
+      if (etat.source === "camera") bouton("Viser avec le contour", () => { if (!etat.pose) etat.pose = { p: vueParDefaut() }; passerEn("accrochage"); });
+      note("Cadre la pièce de biais (deux faces visibles) et fige l'image. Ou bien « Viser avec le contour » : aligne la pièce sous le contour en bougeant le téléphone, le modèle s'accroche tout seul.");
       break;
     case "placement":
-      if (etat.source === "photo") {
-        bouton("Contrôler les trous", capturer, "principal", !!etat.pose && !etat.occupe);
-      } else {
-        bouton("Lancer le suivi", () => passerEn(etat.source === "camera" ? "accrochage" : "suivi"), "principal", !!etat.pose && !etat.occupe);
-        bouton("Retour à la vidéo", () => passerEn("direct"));
+      if (etat.placeMode === "fantome") {
+        bouton(etat.occupe && etat.rechercheAuto ? "Recherche…" : "Trouver la pièce automatiquement", rechercheAuto, "principal", !etat.occupe);
+        if (etat.candidats.length > 1) bouton(`Autre position (${etat.iCandidat + 1}/${etat.candidats.length})`, autreCandidat, "", !etat.occupe);
+        bouton(etat.unDoigt === "pivoter" ? "Un doigt : pivoter ⟳" : "Un doigt : déplacer ✥", () => { etat.unDoigt = etat.unDoigt === "pivoter" ? "deplacer" : "pivoter"; commandes(); });
+        bouton("↻ Tourner 90°", () => tournerModele("z"), "", !etat.occupe);
+        bouton("⇅ Basculer 90°", () => tournerModele("x"), "", !etat.occupe);
       }
-      bouton("Passer ce coin", passerCoin, "", etat.courant >= 0);
-      bouton("Annuler", annulerCoin, "", etat.histo.length > 0);
-      bouton("Tout effacer", () => { viderPoints(); etat.pose = null; commandes(); rafraichir(); });
-      note(n < 4 ? `Touche au moins 4 coins (${n}/4), à peu près suffit. Garde le doigt appuyé pour viser avec la loupe.`
-        : etat.occupe ? "Ajustement sur les arêtes…" : etat.pose ? `Modèle calé (contour aligné à ${Math.round(etat.qualite * 100)} %).` : "Calcul impossible : vérifie les numéros des coins.");
+      if (etat.source === "photo") bouton("Contrôler les trous", capturer, etat.placeMode === "fantome" ? "" : "principal", !!etat.pose && !etat.occupe);
+      else bouton("Lancer le suivi", () => passerEn(etat.source === "camera" ? "accrochage" : "suivi"), etat.qualite >= 0.8 ? "principal" : "", !!etat.pose && !etat.occupe && etat.qualite >= 0.5);
+      if (etat.placeMode === "coins") {
+        bouton("Passer ce coin", passerCoin, "", etat.courant >= 0);
+        bouton("Annuler", annulerCoin, "", etat.histo.length > 0);
+        bouton("Tout effacer", () => { viderPoints(); etat.pose = null; commandes(); rafraichir(); });
+      }
+      bouton(etat.placeMode === "fantome" ? "Placer avec des coins" : "Placer à la main (gestes)", () => {
+        etat.placeMode = etat.placeMode === "fantome" ? "coins" : "fantome"; $("coins-zone").hidden = etat.placeMode !== "coins";
+        if (etat.placeMode === "fantome" && !etat.pose) etat.pose = { p: vueParDefaut() };
+        commandes(); rafraichir();
+      }, "discret");
+      if (etat.source !== "photo") bouton("Retour à la vidéo", () => passerEn("direct"), "discret");
+      note(etat.occupe ? (etat.rechercheAuto ? "Recherche de la pièce dans l'image… (quelques secondes, plus sur un téléphone)" : "Ajustement sur les arêtes…")
+        : etat.placeMode === "fantome"
+          ? (etat.pose && etat.qualite ? `Contour aligné à ${Math.round(etat.qualite * 100)} %. ` : "") + "Amène le modèle sur la pièce : un doigt pour déplacer (ou pivoter, selon le bouton), deux doigts pour la taille et la rotation. Il s'accroche aux arêtes quand tu lâches, même s'il n'est qu'à peu près en place."
+          : n < 4 ? `Touche au moins 4 coins (${n}/4), à peu près suffit.` : etat.pose ? `Modèle calé (contour aligné à ${Math.round(etat.qualite * 100)} %).` : "Calcul impossible : vérifie les numéros des coins.");
       break;
     case "accrochage":
       bouton("Annuler", () => passerEn("direct"));
@@ -202,6 +260,90 @@ async function placerModele() {
   etat.occupe = false;
   if (!r.erreur) { etat.pose = { p: r.p }; etat.qualite = r.qualite; }
   etat.vis = null; commandes(); rafraichir();
+}
+
+// ---------- fantôme : vue par défaut, gestes, recherche automatique ----------
+function centreModele() { const b = etat.M.boite || [[0, 1, 2].map(i => Math.min(...etat.M.reperes.map(r => r[i]))), [0, 1, 2].map(i => Math.max(...etat.M.reperes.map(r => r[i])))]; return { c: [0, 1, 2].map(i => (b[0][i] + b[1][i]) / 2), S: Math.hypot(...[0, 1, 2].map(i => b[1][i] - b[0][i])) }; }
+function vueParDefaut() {
+  // vue de 3/4, de l'avant-gauche et un peu au-dessus, la pièce occupe ~60 % du petit côté
+  const { c, S } = centreModele(), f = 26 / 36 * Math.max(etat.fw, etat.fh), D = f * S / (0.6 * Math.min(etat.fw, etat.fh));
+  const a = 240 * Math.PI / 180, e = 28 * Math.PI / 180;
+  return poseRegarder(c.map((v, i) => v + D * [Math.cos(e) * Math.cos(a), Math.cos(e) * Math.sin(a), Math.sin(e)][i]), c, [0, 0, 1], f);
+}
+function centreCamera(p) { const { c } = centreModele(), R = rodrigues(p); return [0, 1, 2].map(i => R[3 * i] * c[0] + R[3 * i + 1] * c[1] + R[3 * i + 2] * c[2] + p[3 + i]); }
+function avecRotation(p, R) {     // nouvelle orientation, centre de la pièce au même endroit devant la caméra
+  const { c } = centreModele(), Xc = centreCamera(p);
+  const Rc = [0, 1, 2].map(i => R[3 * i] * c[0] + R[3 * i + 1] * c[1] + R[3 * i + 2] * c[2]);
+  return [...versRvec(R), Xc[0] - Rc[0], Xc[1] - Rc[1], Xc[2] - Rc[2], p[6]];
+}
+const mult3 = (A, B) => [0, 1, 2].flatMap(i => [0, 1, 2].map(j => A[3 * i] * B[j] + A[3 * i + 1] * B[3 + j] + A[3 * i + 2] * B[6 + j]));
+function tournerModele(axe) {
+  if (!etat.pose) return;
+  const r = Math.PI / 2, c = Math.cos(r), s = Math.sin(r);
+  const Rm = axe === "z" ? [c, -s, 0, s, c, 0, 0, 0, 1] : [1, 0, 0, 0, c, -s, 0, s, c];
+  etat.pose = { p: avecRotation(etat.pose.p, mult3(rodrigues(etat.pose.p), Rm)) }; etat.vis = null;
+  accrocherFige();
+}
+async function accrocherFige() {
+  if (!etat.pose || !etat.fige) return;
+  const ticket = (accrocherFige.t = (accrocherFige.t || 0) + 1);
+  etat.occupe = true; commandes(); rafraichir();
+  const g = gris(800, etat.fige);
+  const r = await envoyer({ cmd: "accrocher", gris: g, p: etat.pose.p, wImg: etat.fw, hImg: etat.fh, essais: true }, [g.data.buffer]);
+  if (ticket !== accrocherFige.t) return;
+  etat.occupe = false;
+  if (!r.erreur && r.qualite > 0.2) { etat.pose = { p: r.p }; etat.qualite = r.qualite; etat.vis = null; }
+  commandes(); rafraichir();
+}
+async function rechercheAuto() {
+  if (!etat.fige || etat.occupe) return;
+  etat.occupe = true; etat.rechercheAuto = true; commandes(); rafraichir();
+  const g = gris(640, etat.fige);
+  const r = await envoyer({ cmd: "auto", gris: g, wImg: etat.fw, hImg: etat.fh }, [g.data.buffer]);
+  etat.occupe = false; etat.rechercheAuto = false;
+  if (r.erreur || !r.candidats.length) { bandeau("Pièce non trouvée : place-la à la main (glisser, pincer, tourner)."); commandes(); return; }
+  etat.candidats = r.candidats; etat.iCandidat = 0; choisirCandidat();
+  bandeau(`Trouvée en ${(r.ms / 1000).toFixed(1)} s. Si ce n'est pas la bonne position, touche « Autre position ».`);
+}
+function choisirCandidat() { const c = etat.candidats[etat.iCandidat]; etat.pose = { p: c.p }; etat.qualite = c.qualite; etat.vis = null; commandes(); rafraichir(); }
+function autreCandidat() { etat.iCandidat = (etat.iCandidat + 1) % etat.candidats.length; choisirCandidat(); }
+// gestes sur le fantôme : 1 doigt = déplacer, 2 doigts = pincer (distance) et tourner
+const doigts = new Map();
+function gesteDebut(e) { doigts.set(e.pointerId, versImage(e)); etat.geste = { p0: etat.pose.p.slice(), d0: new Map([...doigts].map(([k, v]) => [k, v.slice()])) }; }
+function gesteMouvement(e) {
+  if (!doigts.has(e.pointerId) || !etat.geste) return;
+  doigts.set(e.pointerId, versImage(e));
+  const p0 = etat.geste.p0, d0 = etat.geste.d0, ids = [...doigts.keys()].filter(k => d0.has(k));
+  const f = Math.exp(p0[6]), Xc = centreCamera(p0);
+  if (ids.length === 1 && etat.unDoigt === "pivoter") {
+    // glisser à l'horizontale : la pièce tourne sur elle-même (axe vertical) ; à la verticale : elle s'incline
+    const a = d0.get(ids[0]), b = doigts.get(ids[0]), ech = etat.fw / toile.getBoundingClientRect().width;
+    const az = (b[0] - a[0]) / ech * 0.5 * Math.PI / 180, el = (b[1] - a[1]) / ech * 0.5 * Math.PI / 180;
+    const cz = Math.cos(az), sz = Math.sin(az), cx_ = Math.cos(el), sx = Math.sin(el);
+    const R = mult3([1, 0, 0, 0, cx_, -sx, 0, sx, cx_], mult3(rodrigues(p0), [cz, -sz, 0, sz, cz, 0, 0, 0, 1]));
+    etat.pose = { p: avecRotation(p0, R) };
+  } else if (ids.length === 1) {
+    const a = d0.get(ids[0]), b = doigts.get(ids[0]), k = Xc[2] / f;
+    const p = p0.slice(); p[3] += (b[0] - a[0]) * k; p[4] += (b[1] - a[1]) * k; etat.pose = { p };
+  } else if (ids.length >= 2) {
+    const [i, j] = ids, a0 = d0.get(i), b0 = d0.get(j), a1 = doigts.get(i), b1 = doigts.get(j);
+    const dist0 = Math.hypot(b0[0] - a0[0], b0[1] - a0[1]), dist1 = Math.hypot(b1[0] - a1[0], b1[1] - a1[1]);
+    const ang = Math.atan2(b1[1] - a1[1], b1[0] - a1[0]) - Math.atan2(b0[1] - a0[1], b0[0] - a0[0]);
+    const ech = Math.max(0.3, Math.min(3, dist1 / Math.max(10, dist0)));
+    const c = Math.cos(ang), s = Math.sin(ang), Rz = [c, -s, 0, s, c, 0, 0, 0, 1];
+    let p = avecRotation(p0, mult3(Rz, rodrigues(p0)));
+    const Xn = centreCamera(p), Xt = Xn.map(v => v / ech);                    // plus gros = plus près
+    const m0 = [(a0[0] + b0[0]) / 2, (a0[1] + b0[1]) / 2], m1 = [(a1[0] + b1[0]) / 2, (a1[1] + b1[1]) / 2], k = Xt[2] / f;
+    Xt[0] += (m1[0] - m0[0]) * k; Xt[1] += (m1[1] - m0[1]) * k;
+    p = p.slice(); for (let q = 0; q < 3; q++) p[3 + q] += Xt[q] - Xn[q];
+    etat.pose = { p };
+  }
+  etat.vis = null; rafraichir();
+}
+function gesteFin(e) {
+  doigts.delete(e.pointerId);
+  if (doigts.size) { etat.geste = { p0: etat.pose.p.slice(), d0: new Map([...doigts].map(([k, v]) => [k, v.slice()])) }; return; }
+  etat.geste = null; accrocherFige();
 }
 
 // ---------- boucle vidéo ----------
@@ -298,13 +440,14 @@ function rafraichir() {
   if (fige && etat.fige) ctx.drawImage(etat.fige, 0, 0);
   const ech = etat.fw / (toile.getBoundingClientRect().width || etat.fw);
   if (etat.pose && etat.M) {
-    const fantome = etat.mode === "accrochage";
+    const fantome = etat.mode === "accrochage" || (etat.mode === "placement" && etat.placeMode === "fantome" && (etat.qualite < 0.5 || etat.geste));
     tracerModele(etat.pose.p, fantome ? COUL.fantome : COUL.cao, fantome ? null : COUL.caoCache, Math.max(2, 2.4 * ech), !fantome);
   }
-  if (fige) dessinerPoints(ech);
+  if (fige && etat.placeMode === "coins") dessinerPoints(ech);
   // bandeau et indicateur
   if (performance.now() - (bandeau.t || 0) > 3500) {
-    $("bandeau").innerHTML = etat.mode === "placement" ? (etat.courant >= 0 ? `Touche le coin <b>${etat.courant + 1}</b> · ${NOMS_REPERES[etat.courant]}` : "Coins traités. Touche un coin dans la liste pour le refaire.")
+    $("bandeau").innerHTML = etat.mode === "placement" && etat.placeMode === "fantome" ? (etat.qualite >= 0.8 ? "Modèle accroché ✓" : etat.qualite >= 0.5 ? "Accroché à vérifier : est-ce que les lignes suivent bien la pièce ?" : "Place le modèle sur la pièce")
+      : etat.mode === "placement" ? (etat.courant >= 0 ? `Touche le coin <b>${etat.courant + 1}</b> · ${NOMS_REPERES[etat.courant]}` : "Coins traités. Touche un coin dans la liste pour le refaire.")
       : etat.mode === "accrochage" ? "Aligne la pièce sous le contour blanc"
       : etat.mode === "suivi" ? "Suivi en cours" : etat.mode === "direct" ? "Vidéo en direct" : "";
   }
@@ -415,6 +558,7 @@ function montrerLoupe(xy) {
 }
 toile.addEventListener("pointerdown", e => {
   if (etat.mode !== "placement") return;
+  if (etat.placeMode === "fantome") { if (!etat.pose || etat.rechercheAuto) return; e.preventDefault(); toile.setPointerCapture(e.pointerId); gesteDebut(e); return; }
   e.preventDefault(); toile.setPointerCapture(e.pointerId);
   const xy = versImage(e), seuil = 26 * etat.fw / toile.getBoundingClientRect().width;
   let pris = null, dmin = seuil;
@@ -425,6 +569,7 @@ toile.addEventListener("pointerdown", e => {
   montrerLoupe(xy);
 });
 toile.addEventListener("pointermove", e => {
+  if (etat.mode === "placement" && etat.placeMode === "fantome") { gesteMouvement(e); return; }
   if (!etat.doigt) return;
   const xy = versImage(e); etat.doigt = xy;
   if (etat.glisse && !etat.glisse.nouveau) { etat.points[etat.glisse.k] = [xy[0], xy[1]]; rafraichir(); }
@@ -438,8 +583,8 @@ function finDoigt(annule) {
   if (annule) { if (!g.nouveau) etat.points[g.k] = g.avant; rafraichir(); return; }
   if (g.nouveau) poser(g.k, p); else { etat.histo.push({ k: g.k, avant: g.avant, sautait: false }); etat.points[g.k] = p; placerModele(); }
 }
-toile.addEventListener("pointerup", () => finDoigt(false));
-toile.addEventListener("pointercancel", () => finDoigt(true));
+toile.addEventListener("pointerup", e => { if (etat.mode === "placement" && etat.placeMode === "fantome") gesteFin(e); else finDoigt(false); });
+toile.addEventListener("pointercancel", e => { if (etat.mode === "placement" && etat.placeMode === "fantome") gesteFin(e); else finDoigt(true); });
 window.addEventListener("resize", rafraichir);
 
 // ---------- écran allumé pendant le suivi ----------
