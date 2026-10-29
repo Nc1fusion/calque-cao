@@ -1,0 +1,11 @@
+{
+  "name": "Calque CAO",
+  "short_name": "Calque CAO",
+  "description": "Inspection de pièces par superposition du modèle CAO sur la vidéo du téléphone.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0e1211",
+  "theme_color": "#0e1211",
+  "lang": "fr",
+  "icons": [{ "src": "icone.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

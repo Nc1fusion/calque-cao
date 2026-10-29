@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e1211">
+<title>Calque CAO</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icone.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@500;700&display=swap">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div class="app">
+  <header class="entete">
+    <h1>Calque <span>CAO</span></h1>
+    <button id="b-piece" class="puce" aria-haspopup="dialog">Poutre H</button>
+  </header>
+
+  <div class="scene" id="scene">
+    <video id="video" playsinline muted autoplay></video>
+    <canvas id="toile" aria-label="Superposition du modèle"></canvas>
+    <div class="bandeau" id="bandeau">Démarre la caméra ou ouvre une vidéo pour commencer.</div>
+    <div class="etat-suivi" id="etat-suivi" hidden></div>
+    <canvas id="loupe" width="264" height="264" hidden></canvas>
+    <div class="accueil" id="accueil">
+      <button id="b-camera" class="principal">Démarrer la caméra</button>
+      <label class="bouton-fichier" for="f-video"><input type="file" id="f-video" accept="video/*,image/*">Ouvrir une vidéo ou une photo</label>
+      <p>Vise la pièce de biais pour voir deux faces. Ne zoome pas pendant l'inspection : le calcul garde la focale trouvée au départ.</p>
+    </div>
+  </div>
+
+  <div class="commandes" id="commandes"></div>
+
+  <section class="coins-zone" id="coins-zone" hidden>
+    <div class="coins" id="coins"></div>
+    <canvas id="schema" width="240" height="200" aria-label="Schéma des coins numérotés"></canvas>
+  </section>
+
+  <section class="bilan" id="bilan" hidden>
+    <div class="bilan-tete">
+      <span class="etiquette">Bilan des trous</span>
+      <span class="captures" id="nb-captures"></span>
+    </div>
+    <p class="compte" id="compte"></p>
+    <ul class="liste-trous" id="liste-trous"></ul>
+    <button id="b-vider" class="discret">Effacer le bilan</button>
+  </section>
+
+  <p class="pied">Prototype · le calcul se fait sur ton téléphone, rien n'est envoyé ailleurs.</p>
+</div>
+
+<dialog id="reglages">
+  <form method="dialog" class="feuille">
+    <div class="feuille-tete">
+      <h2>Pièce à inspecter</h2>
+      <button value="fermer" class="discret" aria-label="Fermer">Fermer</button>
+    </div>
+    <div class="segments" role="group" aria-label="Type de pièce">
+      <button type="button" data-type="boite">Boîte</button>
+      <button type="button" data-type="h">Poutre H</button>
+      <button type="button" data-type="u">Profilé U</button>
+    </div>
+    <div class="dims" id="dims"></div>
+    <div id="zone-trous" class="champ">
+      <label for="trous" class="etiquette">Trous (un par ligne)</label>
+      <textarea id="trous" spellcheck="false" rows="7"></textarea>
+      <p class="aide"><code>ame x z Ø</code> · <code>aile-haut x y Ø</code> · <code>aile-bas x y Ø</code> — x depuis le bout gauche (coins 1, 4, 5, 8), z depuis le bas, y sur la largeur (0 = milieu pour une poutre H, 0 = dos de l'âme pour un U). En mm.</p>
+      <p class="aide erreur" id="trous-err" hidden></p>
+    </div>
+    <label class="champ ligne" for="tol">Tolérance de position des trous
+      <span><input type="number" id="tol" value="6" min="1" step="0.5" inputmode="decimal"> mm</span></label>
+    <button value="ok" class="principal">Appliquer</button>
+  </form>
+</dialog>
+
+<script src="js/solveur.js"></script>
+<script src="js/modeles.js"></script>
+<script src="js/recalage.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
